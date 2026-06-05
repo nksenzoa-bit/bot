@@ -1,137 +1,217 @@
+import asyncio
 import os
-import time
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import (
-    ApplicationBuilder, CommandHandler, CallbackQueryHandler,
-    MessageHandler, ContextTypes, filters
-)
 
-BOT_TOKEN = os.getenv("BOT_TOKEN")
-ACCESS_KEY = os.getenv("ACCESS_KEY", "1234512")
-ADMIN_ID = int(os.getenv("6830012291", "0"))
+from aiogram import Bot, Dispatcher, F
+from aiogram.types import Message, ReplyKeyboardMarkup, KeyboardButton
+from aiogram.fsm.storage.memory import MemoryStorage
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import StatesGroup, State
+from aiogram.filters import CommandStart
 
+# ======================
+# CONFIG
+# ======================
+TOKEN = os.getenv("BOT_TOKEN")
+ADMIN_ID = 6830012291  # <-- твой Telegram ID
+
+bot = Bot(token=TOKEN)
+dp = Dispatcher(storage=MemoryStorage())
+
+# ======================
+# DATABASE (RAM)
+# ======================
 users = {}
 
-def ensure_user(uid):
-    if uid not in users:
-        users[uid] = {"banned": False, "uses": 0}
+# ======================
+# STATES
+# ======================
+class AdminStates(StatesGroup):
+    wait_block_id = State()
+    wait_unblock_id = State()
 
-def banned(uid):
-    return users.get(uid, {}).get("banned", False)
+# ======================
+# KEYBOARDS
+# ======================
+main_kb = ReplyKeyboardMarkup(
+    keyboard=[
+        [KeyboardButton(text="👤 Профиль")],
+        [KeyboardButton(text="💬 Поддержка")]
+    ],
+    resize_keyboard=True
+)
 
-def main_menu():
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton("🟢 Снос", callback_data="simulate")],
-        [InlineKeyboardButton("👤 Профиль", callback_data="profile")]
-    ])
+admin_kb = ReplyKeyboardMarkup(
+    keyboard=[
+        [KeyboardButton(text="👤 Профиль")],
+        [KeyboardButton(text="👥 Пользователи")],
+        [KeyboardButton(text="🚫 Заблокировать"), KeyboardButton(text="✅ Разблокировать")],
+        [KeyboardButton(text="💬 Поддержка")]
+    ],
+    resize_keyboard=True
+)
 
-def admin_menu():
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton("🚫 Ban", callback_data="ban")],
-        [InlineKeyboardButton("✅ Unban", callback_data="unban")],
-        [InlineKeyboardButton("👥 Users", callback_data="users")]
-    ])
+# ======================
+# HELPERS
+# ======================
+def is_admin(user_id: int) -> bool:
+    return user_id == ADMIN_ID
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    uid = update.effective_user.id
+def is_blocked(user_id: int) -> bool:
+    return users.get(user_id, {}).get("blocked", False)
+
+def ensure_user(user_id: int):
+    if user_id not in users:
+        users[user_id] = {
+            "blocked": False,
+            "actions": 0
+        }
+
+# ======================
+# START
+# ======================
+@dp.message(CommandStart())
+async def start(message: Message):
+    uid = message.from_user.id
+
     ensure_user(uid)
 
-    if banned(uid):
-        await update.message.reply_text("⛔ Вы заблокированы")
-        return
+    if is_blocked(uid):
+        return await message.answer("🚫 Вы заблокированы")
 
-    await update.message.reply_text("🔑 Введите ключ доступа:")
+    kb = admin_kb if is_admin(uid) else main_kb
+    await message.answer("👋 Добро пожаловать!", reply_markup=kb)
 
-async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    uid = update.effective_user.id
+# ======================
+# PROFILE
+# ======================
+@dp.message(F.text == "👤 Профиль")
+async def profile(message: Message):
+    uid = message.from_user.id
+
+    if is_blocked(uid):
+        return await message.answer("🚫 Доступ запрещён")
+
     ensure_user(uid)
 
-    if banned(uid):
+    await message.answer(
+        f"👤 Профиль\n"
+        f"🆔 ID: {uid}\n"
+        f"📊 Действий: {users[uid]['actions']}"
+    )
+
+# ======================
+# SUPPORT
+# ======================
+@dp.message(F.text == "💬 Поддержка")
+async def support(message: Message):
+    await message.answer("💬 Поддержка: @ZloyAmazon")
+
+# ======================
+# USERS LIST (ADMIN)
+# ======================
+@dp.message(F.text == "👥 Пользователи")
+async def list_users(message: Message):
+    uid = message.from_user.id
+    if not is_admin(uid):
         return
 
-    text = update.message.text
+    text = "👥 Пользователи:\n\n"
 
-    # ADMIN ACTION
-    if uid == ADMIN_ID and context.user_data.get("admin_action"):
-        action = context.user_data["admin_action"]
+    for user_id, data in users.items():
+        text += f"{user_id} | blocked={data['blocked']} | actions={data['actions']}\n"
 
-        try:
-            target = int(text)
-            ensure_user(target)
+    await message.answer(text or "Пусто")
 
-            if action == "ban":
-                users[target]["banned"] = True
-                await update.message.reply_text(f"🚫 {target} заблокирован")
-
-            elif action == "unban":
-                users[target]["banned"] = False
-                await update.message.reply_text(f"✅ {target} разблокирован")
-
-        except:
-            await update.message.reply_text("❌ Ошибка ID")
-
-        context.user_data["admin_action"] = None
+# ======================
+# BLOCK USER
+# ======================
+@dp.message(F.text == "🚫 Заблокировать")
+async def block_start(message: Message, state: FSMContext):
+    if not is_admin(message.from_user.id):
         return
 
-    # ACCESS
-    if text == ACCESS_KEY:
-        await update.message.reply_text("✅ Доступ получен", reply_markup=main_menu())
-    else:
-        await update.message.reply_text("❌ Неверный ключ")
+    await state.set_state(AdminStates.wait_block_id)
+    await message.answer("Введите ID пользователя для блокировки:")
 
-async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    q = update.callback_query
-    uid = q.from_user.id
+@dp.message(AdminStates.wait_block_id)
+async def block_finish(message: Message, state: FSMContext):
+    if not is_admin(message.from_user.id):
+        return
+
+    try:
+        target = int(message.text)
+    except:
+        return await message.answer("❌ Неверный ID")
+
+    ensure_user(target)
+    users[target]["blocked"] = True
+
+    await state.clear()
+    await message.answer("✅ Пользователь заблокирован")
+
+    # уведомление пользователю
+    try:
+        await bot.send_message(target, "🚫 Вас заблокировал администратор")
+    except:
+        pass
+
+# ======================
+# UNBLOCK USER
+# ======================
+@dp.message(F.text == "✅ Разблокировать")
+async def unblock_start(message: Message, state: FSMContext):
+    if not is_admin(message.from_user.id):
+        return
+
+    await state.set_state(AdminStates.wait_unblock_id)
+    await message.answer("Введите ID пользователя для разблокировки:")
+
+@dp.message(AdminStates.wait_unblock_id)
+async def unblock_finish(message: Message, state: FSMContext):
+    if not is_admin(message.from_user.id):
+        return
+
+    try:
+        target = int(message.text)
+    except:
+        return await message.answer("❌ Неверный ID")
+
+    ensure_user(target)
+    users[target]["blocked"] = False
+
+    await state.clear()
+    await message.answer("✅ Пользователь разблокирован")
+
+    try:
+        await bot.send_message(target, "✅ Вас разблокировали")
+    except:
+        pass
+
+# ======================
+# SAFE ACTION EXAMPLE
+# ======================
+@dp.message(F.text == "📊 Действие")
+async def action(message: Message):
+    uid = message.from_user.id
+
+    if is_blocked(uid):
+        return await message.answer("🚫 Вы заблокированы")
+
     ensure_user(uid)
 
-    await q.answer()
+    msg = await message.answer("⏳ Выполняется...")
 
-    if banned(uid):
-        await q.edit_message_text("⛔ Заблокирован")
-        return
+    await asyncio.sleep(1)
 
-    data = q.data
+    users[uid]["actions"] += 1
 
-    if data == "profile":
-        await q.edit_message_text(
-            f"👤 Профиль\n\n⚙ Использований: {users[uid]['uses']}",
-            reply_markup=main_menu()
-        )
+    await msg.edit_text("✅ Успешно выполнено")
 
-    elif data == "simulate":
-        users[uid]["uses"] += 1
-
-        msg = await q.edit_message_text("⚙ Запуск...")
-        for i in range(5):
-            time.sleep(0.5)
-            await msg.edit_text("⚙ Выполнение" + "." * (i+1))
-
-        await msg.edit_text("✅ Готово (Снос)", reply_markup=main_menu())
-
-    elif data in ["ban", "unban", "users"]:
-        if uid != ADMIN_ID:
-            await q.edit_message_text("⛔ Нет доступа")
-            return
-
-        if data == "users":
-            await q.edit_message_text(
-                "👥 Users:\n" + "\n".join(map(str, users.keys())),
-                reply_markup=admin_menu()
-            )
-
-        else:
-            context.user_data["admin_action"] = data
-            await q.edit_message_text("Введите ID пользователя:")
-
-def main():
-    app = ApplicationBuilder().token(BOT_TOKEN).build()
-
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CallbackQueryHandler(callback))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_handler))
-
-    print("Bot running...")
-    app.run_polling()
+# ======================
+# RUN
+# ======================
+async def main():
+    await dp.start_polling(bot)
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())
