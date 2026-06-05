@@ -1,274 +1,157 @@
 import asyncio
 import os
 from aiogram import Bot, Dispatcher, F
-from aiogram.types import Message, ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.types import Message, ReplyKeyboardMarkup, KeyboardButton
 from aiogram.fsm.storage.memory import MemoryStorage
-from aiogram.fsm.context import FSMContext
-from aiogram.fsm.state import StatesGroup, State
 
 # ======================
 # CONFIG
 # ======================
-TOKEN = os.getenv("BOT_TOKEN")  # токен бота из переменной окружения
-ACCESS_KEY = "123456654321"     # твой ключ доступа
+TOKEN = os.getenv("BOT_TOKEN")
+ADMIN_ID = 6830012291  # <-- твой Telegram ID
 
 bot = Bot(token=TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
 
 # ======================
-# USERS DB (в памяти)
+# DB
 # ======================
 users = {}
 
 # ======================
-# ADMINS
-# ======================
-ADMINS = [6830012291]  # <-- вставь сюда свой Telegram ID
-
-# ======================
-# STATES
-# ======================
-class AuthState(StatesGroup):
-    waiting_key = State()  # для авторизации или ввода ID в админке
-
-class SnosState(StatesGroup):
-    waiting_target = State()
-
-class AdminState(StatesGroup):
-    waiting_user_id = State()
-
-# ======================
-# MENUS
+# KEYBOARDS
 # ======================
 main_menu = ReplyKeyboardMarkup(
     keyboard=[
-        [KeyboardButton(text="🛠 Снос"), KeyboardButton(text="👤 Профиль")],
-        [KeyboardButton(text="💬 Поддержка")]
+        [KeyboardButton(text="👤 Профиль")]
     ],
     resize_keyboard=True
 )
 
 admin_menu = ReplyKeyboardMarkup(
     keyboard=[
-        [KeyboardButton(text="👥 Пользователи"), KeyboardButton(text="🔒 Заблокировать")],
-        [KeyboardButton(text="🗑 Удалить"), KeyboardButton(text="♻️ Сброс действий")],
-        [KeyboardButton(text="🛠 Снос"), KeyboardButton(text="👤 Профиль")],
-        [KeyboardButton(text="💬 Поддержка")]
+        [KeyboardButton(text="👥 Пользователи")],
+        [KeyboardButton(text="🚫 Заблокировать"), KeyboardButton(text="✅ Разблокировать")]
     ],
     resize_keyboard=True
 )
 
 # ======================
+# HELPER: BLOCK CHECK
+# ======================
+def is_blocked(user_id: int):
+    return users.get(user_id, {}).get("blocked", False)
+
+# ======================
 # START
 # ======================
 @dp.message(F.text == "/start")
-async def start(message: Message, state: FSMContext):
-    user_id = message.from_user.id
+async def start(message: Message):
+    uid = message.from_user.id
 
-    if user_id in users and users[user_id].get("authorized"):
-        menu = admin_menu if user_id in ADMINS else main_menu
-        await message.answer("👋 Добро пожаловать!", reply_markup=menu)
+    if is_blocked(uid):
+        await message.answer("🚫 Вы заблокированы и не можете использовать этого бота.")
         return
 
-    await state.set_state(AuthState.waiting_key)
-    await message.answer("🔐 Введите ключ доступа:")
+    if uid not in users:
+        users[uid] = {"blocked": False, "actions": 0}
 
-# ======================
-# CHECK KEY
-# ======================
-@dp.message(AuthState.waiting_key)
-async def check_key(message: Message, state: FSMContext):
-    user_id = message.from_user.id
-
-    if message.text != ACCESS_KEY:
-        await message.answer("❌ Неверный ключ")
-        return
-
-    users[user_id] = {
-        "authorized": True,
-        "snos_count": 0,
-        "blocked": False
-    }
-
-    await state.clear()
-    menu = admin_menu if user_id in ADMINS else main_menu
-    await message.answer("✅ Доступ разрешён", reply_markup=menu)
+    await message.answer("👋 Привет!", reply_markup=main_menu)
 
 # ======================
 # PROFILE
 # ======================
 @dp.message(F.text == "👤 Профиль")
 async def profile(message: Message):
-    user_id = message.from_user.id
-    data = users.get(user_id, {"snos_count": 0, "blocked": False})
+    uid = message.from_user.id
 
-    await message.answer(
-        f"👤 Профиль:\n"
-        f"🔢 Всего действий: {data['snos_count']}\n"
-        f"🚫 Заблокирован: {'Да' if data.get('blocked') else 'Нет'}"
-    )
-
-# ======================
-# SUPPORT
-# ======================
-support_kb = InlineKeyboardMarkup(
-    inline_keyboard=[
-        [InlineKeyboardButton(text="💬 Написать в поддержку", url="https://t.me/ZloyAmazon")]
-    ]
-)
-
-@dp.message(F.text == "💬 Поддержка")
-async def support(message: Message):
-    await message.answer("💬 Поддержка:", reply_markup=support_kb)
-
-# ======================
-# SNOS START
-# ======================
-@dp.message(F.text == "🛠 Снос")
-async def snos_start(message: Message, state: FSMContext):
-    await state.set_state(SnosState.waiting_target)
-    await message.answer("Введите username или ID:")
-
-# ======================
-# SNOS FAKE PROCESS
-# ======================
-@dp.message(SnosState.waiting_target)
-async def snos_process(message: Message, state: FSMContext):
-    user_id = message.from_user.id
-
-    if users.get(user_id, {}).get("blocked"):
-        await message.answer("🚫 Вы заблокированы и не можете использовать бота.")
+    if is_blocked(uid):
+        await message.answer("🚫 Доступ запрещён.")
         return
 
-    target = message.text
-    await state.clear()
-
-    msg = await message.answer("⏳ Начинаем процесс... 0%")
-
-    for i in range(1, 101):
-        await asyncio.sleep(0.6)
-        await msg.edit_text(f"⏳ Выполнение... {i}%")
-
-    users[user_id]["snos_count"] += 1
-    await msg.edit_text(f"✅ Готово!\n🎯 Объект: {target}")
+    await message.answer(f"👤 Ваш профиль\nДействий: {users[uid]['actions']}")
 
 # ======================
-# ADMIN: VIEW USERS
+# ADMIN: USERS LIST
 # ======================
 @dp.message(F.text == "👥 Пользователи")
-async def view_users(message: Message):
-    user_id = message.from_user.id
-    if user_id not in ADMINS:
-        return
-
-    if not users:
-        await message.answer("Нет зарегистрированных пользователей.")
+async def users_list(message: Message):
+    if message.from_user.id != ADMIN_ID:
         return
 
     text = "👥 Пользователи:\n"
     for uid, data in users.items():
-        text += f"{uid} — Действий: {data['snos_count']} — {'Заблокирован' if data.get('blocked') else 'Активен'}\n"
+        text += f"{uid} | blocked={data['blocked']}\n"
 
     await message.answer(text)
 
 # ======================
-# ADMIN: BLOCK USER
+# BLOCK USER
 # ======================
-@dp.message(F.text == "🔒 Заблокировать")
-async def block_user_start(message: Message, state: FSMContext):
-    if message.from_user.id not in ADMINS:
+@dp.message(F.text == "🚫 Заблокировать")
+async def block_prompt(message: Message):
+    if message.from_user.id != ADMIN_ID:
         return
-
-    await state.set_state(AdminState.waiting_user_id)
     await message.answer("Введите ID пользователя для блокировки:")
 
-@dp.message(AdminState.waiting_user_id)
-async def block_user(message: Message, state: FSMContext):
-    admin_id = message.from_user.id
-    if admin_id not in ADMINS:
-        return
+@dp.message()
+async def block_user(message: Message):
+    uid = message.from_user.id
 
-    try:
-        target_id = int(message.text)
-    except ValueError:
-        await message.answer("❌ Некорректный ID")
-        return
+    if uid == ADMIN_ID and message.text.isdigit():
+        target = int(message.text)
 
-    if target_id in users:
-        users[target_id]["blocked"] = True
-        await message.answer(f"✅ Пользователь {target_id} заблокирован")
-    else:
-        await message.answer("❌ Пользователь не найден")
+        if target in users:
+            users[target]["blocked"] = True
 
-    await state.clear()
+            await message.answer("✅ Пользователь заблокирован")
+
+            # уведомление пользователю
+            try:
+                await bot.send_message(target, "🚫 Вы были заблокированы администратором.")
+            except:
+                pass
 
 # ======================
-# ADMIN: DELETE USER
+# UNBLOCK USER
 # ======================
-@dp.message(F.text == "🗑 Удалить")
-async def delete_user_start(message: Message, state: FSMContext):
-    if message.from_user.id not in ADMINS:
+@dp.message(F.text == "✅ Разблокировать")
+async def unblock_prompt(message: Message):
+    if message.from_user.id != ADMIN_ID:
         return
+    await message.answer("Введите ID пользователя для разблокировки:")
 
-    await state.set_state(AdminState.waiting_user_id)
-    await message.answer("Введите ID пользователя для удаления:")
+@dp.message()
+async def unblock_user(message: Message):
+    uid = message.from_user.id
 
-@dp.message(AdminState.waiting_user_id)
-async def delete_user(message: Message, state: FSMContext):
-    admin_id = message.from_user.id
-    if admin_id not in ADMINS:
-        return
+    if uid == ADMIN_ID and message.text.isdigit():
+        target = int(message.text)
 
-    try:
-        target_id = int(message.text)
-    except ValueError:
-        await message.answer("❌ Некорректный ID")
-        return
+        if target in users:
+            users[target]["blocked"] = False
+            await message.answer("✅ Пользователь разблокирован")
 
-    if target_id in users:
-        del users[target_id]
-        await message.answer(f"✅ Пользователь {target_id} удалён")
-    else:
-        await message.answer("❌ Пользователь не найден")
-
-    await state.clear()
+            try:
+                await bot.send_message(target, "✅ Вас разблокировали.")
+            except:
+                pass
 
 # ======================
-# ADMIN: RESET USER ACTIONS
+# EXAMPLE ACTION (safe)
 # ======================
-@dp.message(F.text == "♻️ Сброс действий")
-async def reset_user_start(message: Message, state: FSMContext):
-    if message.from_user.id not in ADMINS:
+@dp.message(F.text == "📊 Действие")
+async def action(message: Message):
+    uid = message.from_user.id
+
+    if is_blocked(uid):
         return
 
-    await state.set_state(AdminState.waiting_user_id)
-    await message.answer("Введите ID пользователя для сброса действий:")
+    users.setdefault(uid, {"blocked": False, "actions": 0})
+    users[uid]["actions"] += 1
 
-@dp.message(AdminState.waiting_user_id)
-async def reset_user_actions(message: Message, state: FSMContext):
-    admin_id = message.from_user.id
-    if admin_id not in ADMINS:
-        return
+    msg = await message.answer("⏳ Выполняется...")
 
-    try:
-        target_id = int(message.text)
-    except ValueError:
-        await message.answer("❌ Некорректный ID")
-        return
+    await asyncio.sleep(2)
 
-    if target_id in users:
-        users[target_id]["snos_count"] = 0
-        await message.answer(f"✅ Действия пользователя {target_id} сброшены")
-    else:
-        await message.answer("❌ Пользователь не найден")
-
-    await state.clear()
-
-# ======================
-# RUN
-# ======================
-async def main():
-    await dp.start_polling(bot)
-
-if __name__ == "__main__":
-    asyncio.run(main())
+    await msg.edit_text("✅ Успешно выполнено")
