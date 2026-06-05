@@ -12,28 +12,50 @@ from aiogram.filters import CommandStart
 # CONFIG
 # ======================
 TOKEN = os.getenv("BOT_TOKEN")
-ADMIN_ID = 6830012291  # <-- твой Telegram ID
+ACCESS_KEY = "123456123"
+ADMIN_ID = 6830012291  # твой ID
 
 bot = Bot(token=TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
 
 # ======================
-# DATABASE (RAM)
+# DATABASE
 # ======================
 users = {}
+authorized = set()
 
 # ======================
 # STATES
 # ======================
+class AuthState(StatesGroup):
+    wait_key = State()
+
 class AdminStates(StatesGroup):
     wait_block_id = State()
     wait_unblock_id = State()
 
 # ======================
+# HELPERS
+# ======================
+def is_admin(uid: int):
+    return uid == ADMIN_ID
+
+def ensure(uid: int):
+    if uid not in users:
+        users[uid] = {"blocked": False, "actions": 0}
+
+def is_blocked(uid: int):
+    return users.get(uid, {}).get("blocked", False)
+
+def is_auth(uid: int):
+    return uid in authorized
+
+# ======================
 # KEYBOARDS
 # ======================
-main_kb = ReplyKeyboardMarkup(
+user_kb = ReplyKeyboardMarkup(
     keyboard=[
+        [KeyboardButton(text="🛠 Снос")],
         [KeyboardButton(text="👤 Профиль")],
         [KeyboardButton(text="💬 Поддержка")]
     ],
@@ -42,44 +64,48 @@ main_kb = ReplyKeyboardMarkup(
 
 admin_kb = ReplyKeyboardMarkup(
     keyboard=[
-        [KeyboardButton(text="👤 Профиль")],
+        [KeyboardButton(text="🛠 Снос")],
         [KeyboardButton(text="👥 Пользователи")],
         [KeyboardButton(text="🚫 Заблокировать"), KeyboardButton(text="✅ Разблокировать")],
+        [KeyboardButton(text="👤 Профиль")],
         [KeyboardButton(text="💬 Поддержка")]
     ],
     resize_keyboard=True
 )
 
 # ======================
-# HELPERS
-# ======================
-def is_admin(user_id: int) -> bool:
-    return user_id == ADMIN_ID
-
-def is_blocked(user_id: int) -> bool:
-    return users.get(user_id, {}).get("blocked", False)
-
-def ensure_user(user_id: int):
-    if user_id not in users:
-        users[user_id] = {
-            "blocked": False,
-            "actions": 0
-        }
-
-# ======================
-# START
+# START + AUTH
 # ======================
 @dp.message(CommandStart())
-async def start(message: Message):
+async def start(message: Message, state: FSMContext):
     uid = message.from_user.id
-
-    ensure_user(uid)
+    ensure(uid)
 
     if is_blocked(uid):
         return await message.answer("🚫 Вы заблокированы")
 
-    kb = admin_kb if is_admin(uid) else main_kb
+    if not is_auth(uid):
+        await state.set_state(AuthState.wait_key)
+        return await message.answer("🔐 Введите ключ доступа:")
+
+    kb = admin_kb if is_admin(uid) else user_kb
     await message.answer("👋 Добро пожаловать!", reply_markup=kb)
+
+# ======================
+# KEY CHECK
+# ======================
+@dp.message(AuthState.wait_key)
+async def check_key(message: Message, state: FSMContext):
+    uid = message.from_user.id
+
+    if message.text != ACCESS_KEY:
+        return await message.answer("❌ Неверный ключ")
+
+    authorized.add(uid)
+    await state.clear()
+
+    kb = admin_kb if is_admin(uid) else user_kb
+    await message.answer("✅ Доступ открыт", reply_markup=kb)
 
 # ======================
 # PROFILE
@@ -88,10 +114,13 @@ async def start(message: Message):
 async def profile(message: Message):
     uid = message.from_user.id
 
-    if is_blocked(uid):
-        return await message.answer("🚫 Доступ запрещён")
+    if not is_auth(uid):
+        return await message.answer("🔐 /start")
 
-    ensure_user(uid)
+    if is_blocked(uid):
+        return await message.answer("🚫 Заблокирован")
+
+    ensure(uid)
 
     await message.answer(
         f"👤 Профиль\n"
@@ -107,31 +136,60 @@ async def support(message: Message):
     await message.answer("💬 Поддержка: @ZloyAmazon")
 
 # ======================
+# SNOS (USER + ADMIN)
+# ======================
+@dp.message(F.text == "🛠 Снос")
+async def snos(message: Message):
+    uid = message.from_user.id
+
+    if not is_auth(uid):
+        return await message.answer("🔐 /start")
+
+    if is_blocked(uid):
+        return await message.answer("🚫 Вы заблокированы")
+
+    msg = await message.answer("⏳ Запуск...")
+
+    await asyncio.sleep(1)
+    await msg.edit_text("⚙️ Обработка...")
+
+    await asyncio.sleep(1)
+    await msg.edit_text("🔍 Проверка...")
+
+    await asyncio.sleep(1)
+
+    users[uid]["actions"] += 1
+
+    await msg.edit_text("✅ Успешно выполнено")
+
+# ======================
 # USERS LIST (ADMIN)
 # ======================
 @dp.message(F.text == "👥 Пользователи")
-async def list_users(message: Message):
+async def users_list(message: Message):
     uid = message.from_user.id
+
     if not is_admin(uid):
         return
 
     text = "👥 Пользователи:\n\n"
 
     for user_id, data in users.items():
-        text += f"{user_id} | blocked={data['blocked']} | actions={data['actions']}\n"
+        status = "🚫" if data["blocked"] else "✅"
+        text += f"{status} {user_id} | actions={data['actions']}\n"
 
-    await message.answer(text or "Пусто")
+    await message.answer(text)
 
 # ======================
 # BLOCK USER
 # ======================
 @dp.message(F.text == "🚫 Заблокировать")
-async def block_start(message: Message, state: FSMContext):
+async def block(message: Message, state: FSMContext):
     if not is_admin(message.from_user.id):
         return
 
     await state.set_state(AdminStates.wait_block_id)
-    await message.answer("Введите ID пользователя для блокировки:")
+    await message.answer("Введите ID пользователя:")
 
 @dp.message(AdminStates.wait_block_id)
 async def block_finish(message: Message, state: FSMContext):
@@ -141,15 +199,14 @@ async def block_finish(message: Message, state: FSMContext):
     try:
         target = int(message.text)
     except:
-        return await message.answer("❌ Неверный ID")
+        return await message.answer("❌ Ошибка ID")
 
-    ensure_user(target)
+    ensure(target)
     users[target]["blocked"] = True
 
     await state.clear()
-    await message.answer("✅ Пользователь заблокирован")
+    await message.answer("🚫 Пользователь заблокирован")
 
-    # уведомление пользователю
     try:
         await bot.send_message(target, "🚫 Вас заблокировал администратор")
     except:
@@ -159,12 +216,12 @@ async def block_finish(message: Message, state: FSMContext):
 # UNBLOCK USER
 # ======================
 @dp.message(F.text == "✅ Разблокировать")
-async def unblock_start(message: Message, state: FSMContext):
+async def unblock(message: Message, state: FSMContext):
     if not is_admin(message.from_user.id):
         return
 
     await state.set_state(AdminStates.wait_unblock_id)
-    await message.answer("Введите ID пользователя для разблокировки:")
+    await message.answer("Введите ID пользователя:")
 
 @dp.message(AdminStates.wait_unblock_id)
 async def unblock_finish(message: Message, state: FSMContext):
@@ -174,9 +231,9 @@ async def unblock_finish(message: Message, state: FSMContext):
     try:
         target = int(message.text)
     except:
-        return await message.answer("❌ Неверный ID")
+        return await message.answer("❌ Ошибка ID")
 
-    ensure_user(target)
+    ensure(target)
     users[target]["blocked"] = False
 
     await state.clear()
@@ -186,26 +243,6 @@ async def unblock_finish(message: Message, state: FSMContext):
         await bot.send_message(target, "✅ Вас разблокировали")
     except:
         pass
-
-# ======================
-# SAFE ACTION EXAMPLE
-# ======================
-@dp.message(F.text == "📊 Действие")
-async def action(message: Message):
-    uid = message.from_user.id
-
-    if is_blocked(uid):
-        return await message.answer("🚫 Вы заблокированы")
-
-    ensure_user(uid)
-
-    msg = await message.answer("⏳ Выполняется...")
-
-    await asyncio.sleep(1)
-
-    users[uid]["actions"] += 1
-
-    await msg.edit_text("✅ Успешно выполнено")
 
 # ======================
 # RUN
