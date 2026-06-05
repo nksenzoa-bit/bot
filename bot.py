@@ -17,13 +17,13 @@ from aiogram.filters import CommandStart
 # CONFIG
 # ======================
 TOKEN = os.getenv("BOT_TOKEN")
-ADMIN_ID = 6830012291  # <-- твой ID
+ADMIN_ID = 6830012291  # <-- твой Telegram ID
 
 bot = Bot(token=TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
 
 # ======================
-# DB (RAM)
+# DATABASE
 # ======================
 users = {}
 
@@ -34,10 +34,10 @@ def ensure_user(uid: int):
     if uid not in users:
         users[uid] = {"blocked": False, "actions": 0}
 
-def is_blocked(uid: int):
+def blocked(uid: int):
     return users.get(uid, {}).get("blocked", False)
 
-def is_admin(uid: int):
+def admin(uid: int):
     return uid == ADMIN_ID
 
 # ======================
@@ -46,7 +46,8 @@ def is_admin(uid: int):
 main_kb = ReplyKeyboardMarkup(
     keyboard=[
         [KeyboardButton(text="👤 Профиль")],
-        [KeyboardButton(text="👥 Пользователи")]
+        [KeyboardButton(text="👥 Пользователи"), KeyboardButton(text="💬 Поддержка")],
+        [KeyboardButton(text="📊 Действие")]
     ],
     resize_keyboard=True
 )
@@ -59,12 +60,10 @@ async def start(message: Message):
     uid = message.from_user.id
     ensure_user(uid)
 
-    if is_blocked(uid):
+    if blocked(uid):
         return await message.answer("🚫 Вы заблокированы")
 
-    kb = main_kb if is_admin(uid) else main_kb
-
-    await message.answer("👋 Добро пожаловать!", reply_markup=kb)
+    await message.answer("👋 Добро пожаловать!", reply_markup=main_kb)
 
 # ======================
 # PROFILE
@@ -74,8 +73,8 @@ async def profile(message: Message):
     uid = message.from_user.id
     ensure_user(uid)
 
-    if is_blocked(uid):
-        return await message.answer("🚫 Доступ запрещён")
+    if blocked(uid):
+        return await message.answer("🚫 Вы заблокированы")
 
     await message.answer(
         f"👤 Профиль\n"
@@ -84,14 +83,21 @@ async def profile(message: Message):
     )
 
 # ======================
-# SAFE ACTION EXAMPLE
+# SUPPORT
+# ======================
+@dp.message(F.text == "💬 Поддержка")
+async def support(message: Message):
+    await message.answer("💬 Поддержка: @ZloyAmazon")
+
+# ======================
+# ACTION
 # ======================
 @dp.message(F.text == "📊 Действие")
 async def action(message: Message):
     uid = message.from_user.id
     ensure_user(uid)
 
-    if is_blocked(uid):
+    if blocked(uid):
         return await message.answer("🚫 Вы заблокированы")
 
     msg = await message.answer("⏳ Выполняется...")
@@ -103,9 +109,9 @@ async def action(message: Message):
     await msg.edit_text("✅ Успешно выполнено")
 
 # ======================
-# USERS BUTTON LIST (ADMIN)
+# USERS INLINE LIST
 # ======================
-def users_kb():
+def users_keyboard():
     kb = []
 
     for uid, data in users.items():
@@ -121,24 +127,25 @@ def users_kb():
     return InlineKeyboardMarkup(inline_keyboard=kb)
 
 # ======================
-# SHOW USERS
+# USERS MENU
 # ======================
 @dp.message(F.text == "👥 Пользователи")
-async def show_users(message: Message):
+async def users_list(message: Message):
     uid = message.from_user.id
-    if not is_admin(uid):
+
+    if not admin(uid):
         return
 
     ensure_user(uid)
 
-    await message.answer("👥 Список пользователей:", reply_markup=users_kb())
+    await message.answer("👥 Пользователи:", reply_markup=users_keyboard())
 
 # ======================
 # USER PANEL
 # ======================
 @dp.callback_query(F.data.startswith("user:"))
 async def user_panel(callback: CallbackQuery):
-    if not is_admin(callback.from_user.id):
+    if not admin(callback.from_user.id):
         return
 
     uid = int(callback.data.split(":")[1])
@@ -147,27 +154,23 @@ async def user_panel(callback: CallbackQuery):
     data = users[uid]
 
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [
-            InlineKeyboardButton(text="🚫 Заблокировать", callback_data=f"block:{uid}")
-        ],
-        [
-            InlineKeyboardButton(text="✅ Разблокировать", callback_data=f"unblock:{uid}")
-        ]
+        [InlineKeyboardButton(text="🚫 Заблокировать", callback_data=f"block:{uid}")],
+        [InlineKeyboardButton(text="✅ Разблокировать", callback_data=f"unblock:{uid}")]
     ])
 
     await callback.message.edit_text(
-        f"👤 USER: {uid}\n"
+        f"👤 USER {uid}\n"
         f"📊 Actions: {data['actions']}\n"
         f"🚫 Blocked: {data['blocked']}",
         reply_markup=kb
     )
 
 # ======================
-# BLOCK USER
+# BLOCK
 # ======================
 @dp.callback_query(F.data.startswith("block:"))
 async def block_user(callback: CallbackQuery):
-    if not is_admin(callback.from_user.id):
+    if not admin(callback.from_user.id):
         return
 
     uid = int(callback.data.split(":")[1])
@@ -183,11 +186,11 @@ async def block_user(callback: CallbackQuery):
         pass
 
 # ======================
-# UNBLOCK USER
+# UNBLOCK
 # ======================
 @dp.callback_query(F.data.startswith("unblock:"))
 async def unblock_user(callback: CallbackQuery):
-    if not is_admin(callback.from_user.id):
+    if not admin(callback.from_user.id):
         return
 
     uid = int(callback.data.split(":")[1])
