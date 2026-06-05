@@ -1,62 +1,70 @@
 import asyncio
 import os
+
 from aiogram import Bot, Dispatcher, F
-from aiogram.types import Message, ReplyKeyboardMarkup, KeyboardButton
+from aiogram.types import (
+    Message,
+    ReplyKeyboardMarkup,
+    KeyboardButton,
+    InlineKeyboardMarkup,
+    InlineKeyboardButton,
+    CallbackQuery
+)
 from aiogram.fsm.storage.memory import MemoryStorage
+from aiogram.filters import CommandStart
 
 # ======================
 # CONFIG
 # ======================
 TOKEN = os.getenv("BOT_TOKEN")
-ADMIN_ID = 6830012291  # <-- твой Telegram ID
+ADMIN_ID = 6830012291  # <-- твой ID
 
 bot = Bot(token=TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
 
 # ======================
-# DB
+# DB (RAM)
 # ======================
 users = {}
 
 # ======================
+# HELPERS
+# ======================
+def ensure_user(uid: int):
+    if uid not in users:
+        users[uid] = {"blocked": False, "actions": 0}
+
+def is_blocked(uid: int):
+    return users.get(uid, {}).get("blocked", False)
+
+def is_admin(uid: int):
+    return uid == ADMIN_ID
+
+# ======================
 # KEYBOARDS
 # ======================
-main_menu = ReplyKeyboardMarkup(
+main_kb = ReplyKeyboardMarkup(
     keyboard=[
-        [KeyboardButton(text="👤 Профиль")]
+        [KeyboardButton(text="👤 Профиль")],
+        [KeyboardButton(text="👥 Пользователи")]
     ],
     resize_keyboard=True
 )
-
-admin_menu = ReplyKeyboardMarkup(
-    keyboard=[
-        [KeyboardButton(text="👥 Пользователи")],
-        [KeyboardButton(text="🚫 Заблокировать"), KeyboardButton(text="✅ Разблокировать")]
-    ],
-    resize_keyboard=True
-)
-
-# ======================
-# HELPER: BLOCK CHECK
-# ======================
-def is_blocked(user_id: int):
-    return users.get(user_id, {}).get("blocked", False)
 
 # ======================
 # START
 # ======================
-@dp.message(F.text == "/start")
+@dp.message(CommandStart())
 async def start(message: Message):
     uid = message.from_user.id
+    ensure_user(uid)
 
     if is_blocked(uid):
-        await message.answer("🚫 Вы заблокированы и не можете использовать этого бота.")
-        return
+        return await message.answer("🚫 Вы заблокированы")
 
-    if uid not in users:
-        users[uid] = {"blocked": False, "actions": 0}
+    kb = main_kb if is_admin(uid) else main_kb
 
-    await message.answer("👋 Привет!", reply_markup=main_menu)
+    await message.answer("👋 Добро пожаловать!", reply_markup=kb)
 
 # ======================
 # PROFILE
@@ -64,94 +72,141 @@ async def start(message: Message):
 @dp.message(F.text == "👤 Профиль")
 async def profile(message: Message):
     uid = message.from_user.id
+    ensure_user(uid)
 
     if is_blocked(uid):
-        await message.answer("🚫 Доступ запрещён.")
-        return
+        return await message.answer("🚫 Доступ запрещён")
 
-    await message.answer(f"👤 Ваш профиль\nДействий: {users[uid]['actions']}")
-
-# ======================
-# ADMIN: USERS LIST
-# ======================
-@dp.message(F.text == "👥 Пользователи")
-async def users_list(message: Message):
-    if message.from_user.id != ADMIN_ID:
-        return
-
-    text = "👥 Пользователи:\n"
-    for uid, data in users.items():
-        text += f"{uid} | blocked={data['blocked']}\n"
-
-    await message.answer(text)
+    await message.answer(
+        f"👤 Профиль\n"
+        f"🆔 ID: {uid}\n"
+        f"📊 Действий: {users[uid]['actions']}"
+    )
 
 # ======================
-# BLOCK USER
-# ======================
-@dp.message(F.text == "🚫 Заблокировать")
-async def block_prompt(message: Message):
-    if message.from_user.id != ADMIN_ID:
-        return
-    await message.answer("Введите ID пользователя для блокировки:")
-
-@dp.message()
-async def block_user(message: Message):
-    uid = message.from_user.id
-
-    if uid == ADMIN_ID and message.text.isdigit():
-        target = int(message.text)
-
-        if target in users:
-            users[target]["blocked"] = True
-
-            await message.answer("✅ Пользователь заблокирован")
-
-            # уведомление пользователю
-            try:
-                await bot.send_message(target, "🚫 Вы были заблокированы администратором.")
-            except:
-                pass
-
-# ======================
-# UNBLOCK USER
-# ======================
-@dp.message(F.text == "✅ Разблокировать")
-async def unblock_prompt(message: Message):
-    if message.from_user.id != ADMIN_ID:
-        return
-    await message.answer("Введите ID пользователя для разблокировки:")
-
-@dp.message()
-async def unblock_user(message: Message):
-    uid = message.from_user.id
-
-    if uid == ADMIN_ID and message.text.isdigit():
-        target = int(message.text)
-
-        if target in users:
-            users[target]["blocked"] = False
-            await message.answer("✅ Пользователь разблокирован")
-
-            try:
-                await bot.send_message(target, "✅ Вас разблокировали.")
-            except:
-                pass
-
-# ======================
-# EXAMPLE ACTION (safe)
+# SAFE ACTION EXAMPLE
 # ======================
 @dp.message(F.text == "📊 Действие")
 async def action(message: Message):
     uid = message.from_user.id
+    ensure_user(uid)
 
     if is_blocked(uid):
-        return
-
-    users.setdefault(uid, {"blocked": False, "actions": 0})
-    users[uid]["actions"] += 1
+        return await message.answer("🚫 Вы заблокированы")
 
     msg = await message.answer("⏳ Выполняется...")
 
-    await asyncio.sleep(2)
+    await asyncio.sleep(1)
+
+    users[uid]["actions"] += 1
 
     await msg.edit_text("✅ Успешно выполнено")
+
+# ======================
+# USERS BUTTON LIST (ADMIN)
+# ======================
+def users_kb():
+    kb = []
+
+    for uid, data in users.items():
+        status = "🚫" if data["blocked"] else "✅"
+
+        kb.append([
+            InlineKeyboardButton(
+                text=f"{status} {uid}",
+                callback_data=f"user:{uid}"
+            )
+        ])
+
+    return InlineKeyboardMarkup(inline_keyboard=kb)
+
+# ======================
+# SHOW USERS
+# ======================
+@dp.message(F.text == "👥 Пользователи")
+async def show_users(message: Message):
+    uid = message.from_user.id
+    if not is_admin(uid):
+        return
+
+    ensure_user(uid)
+
+    await message.answer("👥 Список пользователей:", reply_markup=users_kb())
+
+# ======================
+# USER PANEL
+# ======================
+@dp.callback_query(F.data.startswith("user:"))
+async def user_panel(callback: CallbackQuery):
+    if not is_admin(callback.from_user.id):
+        return
+
+    uid = int(callback.data.split(":")[1])
+    ensure_user(uid)
+
+    data = users[uid]
+
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="🚫 Заблокировать", callback_data=f"block:{uid}")
+        ],
+        [
+            InlineKeyboardButton(text="✅ Разблокировать", callback_data=f"unblock:{uid}")
+        ]
+    ])
+
+    await callback.message.edit_text(
+        f"👤 USER: {uid}\n"
+        f"📊 Actions: {data['actions']}\n"
+        f"🚫 Blocked: {data['blocked']}",
+        reply_markup=kb
+    )
+
+# ======================
+# BLOCK USER
+# ======================
+@dp.callback_query(F.data.startswith("block:"))
+async def block_user(callback: CallbackQuery):
+    if not is_admin(callback.from_user.id):
+        return
+
+    uid = int(callback.data.split(":")[1])
+    ensure_user(uid)
+
+    users[uid]["blocked"] = True
+
+    await callback.answer("Заблокирован")
+
+    try:
+        await bot.send_message(uid, "🚫 Вас заблокировал администратор")
+    except:
+        pass
+
+# ======================
+# UNBLOCK USER
+# ======================
+@dp.callback_query(F.data.startswith("unblock:"))
+async def unblock_user(callback: CallbackQuery):
+    if not is_admin(callback.from_user.id):
+        return
+
+    uid = int(callback.data.split(":")[1])
+    ensure_user(uid)
+
+    users[uid]["blocked"] = False
+
+    await callback.answer("Разблокирован")
+
+    try:
+        await bot.send_message(uid, "✅ Вас разблокировали")
+    except:
+        pass
+
+# ======================
+# RUN
+# ======================
+async def main():
+    await dp.start_polling(bot)
+
+if __name__ == "__main__":
+    asyncio.run(main())
