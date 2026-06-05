@@ -9,7 +9,7 @@ from aiogram.fsm.state import StatesGroup, State
 # ======================
 # CONFIG
 # ======================
-TOKEN = os.getenv("8857276674:AAGCC1F5vWY1nZkPz6KfVDH5aUsz98FLVio")
+TOKEN = os.getenv("BOT_TOKEN")
 ACCESS_KEY = "123456654321"  # твой ключ
 
 bot = Bot(token=TOKEN)
